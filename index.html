@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Audio Experiment</title>
+    <script src="js/synthesizer.js"></script>
+    <script src="js/audio_visualizer.js"></script>
+    <script>
+      var $ = function(query) {
+        return document.querySelector(query);
+      };
+      var synth = null, canvas = null, ctx = null;
+
+      var drawFFT = function(freq) {
+        var CANVAS_WIDTH = canvas.width;
+        var CANVAS_HEIGHT = canvas.height;
+        ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+        // Draw rectangle for each frequency bin.
+        for (var i = 0; i < CANVAS_WIDTH; i++) {
+          var value = freq[Math.round(freq.length / CANVAS_WIDTH) * i];
+          ctx.fillStyle = 'hsl('+(125+~~(value/2))+', 10%, 50%)';
+          ctx.fillRect(i, CANVAS_HEIGHT, 1, -CANVAS_HEIGHT * value / 256);
+        }
+      };
+      var clearFFT = function() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      };
+
+      var AjaxLoader = (function() {
+        return {
+          showBig: function(elem) {
+            var overlay = document.createElement('div');
+            overlay.style.backgroundColor = 'black';
+            overlay.style.opacity = '0.5';
+            overlay.style.zIndex = 1000;
+            overlay.style.position = 'absolute';
+            overlay.style.display = '-webkit-box';
+            overlay.style.webkitBoxPack = 'center';
+            overlay.style.webkitBoxAlign = 'center';
+            overlay.style.top = elem.offsetTop+'px';
+            overlay.style.left = elem.offsetLeft+'px';
+            overlay.style.width = elem.offsetWidth+'px';
+            overlay.style.height = elem.offsetHeight+'px';
+            overlay.classList.add('ajax_loader');
+            var img = document.createElement('img');
+            img.src = 'img/big_loader.gif';
+            overlay.appendChild(img);
+            elem.appendChild(overlay);
+          },
+          hideBig: function(elem) {
+            var overlay = elem.querySelector('.ajax_loader');
+            elem.removeChild(overlay);
+          }
+        };
+      })();
+
+      var AudioNodes = function() {
+        var config = {
+          gain: {
+            name: 'Gain',
+            change: function(e) {
+              synth.addNode('Gain', {
+                gain: {value: $('#gain_value').valueAsNumber},
+              });
+            },
+            params: ['gain_value']
+          },
+          compressor: {
+            name: 'DynamicsCompressor',
+            change: function(e) {
+              synth.addNode('DynamicsCompressor', {
+              });
+            },
+            params: []
+          },
+          convolver: {
+            name: 'Convolver',
+            change: function(e) {
+            },
+            params: []
+          },
+          delay: {
+            name: 'Delay',
+            change: function(e) {
+              synth.addNode('Delay', {
+                delayTime: {value: $('#delay_time').valueAsNumber},
+              });
+            },
+            params: ['delay_time']
+          },
+          biquad_filter: {
+            name: 'BiquadFilter',
+            change: function(e) {
+              synth.addNode('BiquadFilter', {
+                type: $('#filter_type').value,
+                Q: $('#filter_q').valueAsNumber,
+                frequency: {value: $('#filter_frequency').valueAsNumber},
+                gain: {value: $('#filter_gain').valueAsNumber}
+              });
+            },
+            params: ['filter_type', 'filter_q', 'filter_frequency', 'filter_gain']
+          },
+          panner: {
+            name: 'Panner',
+            change: function(e) {
+              synth.addNode('Panner', {
+                panningModel: $('#panner_model').valueAsNumber,
+                refDistance: $('#panner_refdis').valueAsNumber,
+                maxDistance: $('#panner_maxdis').valueAsNumber,
+                rolloffFactor: $('#panner_rolloff').valueAsNumber
+              });
+            },
+            params: ['panner_model', 'panner_refdis', 'panner_maxdis', 'panner_rolloff']
+          },
+          shaper: {
+            name: 'WaveShaper',
+            change: function(e) {
+              synth.addNode('WaveShaper', {
+                curve: $('#shaper_curve').valueAsNumber
+              });
+            },
+            params: ['shaper_curve']
+          }
+        };
+
+        for (var key in config) {
+          var elem = $('#'+key);
+          if (elem) {
+            (function(k) {
+              elem.onchange = function(e) {
+                if (!synth) return;
+                if (e.target.checked) {
+                  config[k].change();
+                } else {
+                  synth.removeNode(config[k].name);
+                }
+              };
+            })(key);
+            for (var i = 0; i < config[key].params.length; i++) {
+              var param = config[key].params[i];
+              var pelem = $('#'+param);
+              if (pelem) {
+                pelem.onchange = (function(k) {
+                  return function(e) {
+                    if (synth) {
+                      $('#'+k).checked = true;
+                      config[k].change();
+                    }
+                    e.target.nextSibling.value = e.target.value;
+                  };
+                })(key);
+              }
+            }
+          }
+        };
+        this.init = function() {
+          for (var key in config) {
+            if ($('#'+key)) $('#'+key).checked = false;
+            if (key === 'convolver') $('#conv_filename').value = '';
+          }
+        };
+      };
+      window.onload = function() {
+        var av = new AudioVisualizer('100%', '200');
+        canvas = $('#fft');
+        ctx = canvas.getContext('2d');
+
+        $('#dropzone').appendChild(av.getSVG());
+        $('#dropzone').ondragenter = function(e) {
+          e.target.style.backgroundColor = '#aaa';
+        };
+        $('#dropzone').ondragleave = function(e) {
+          e.target.style.backgroundColor = '#eee';
+        };
+        $('#dropzone').ondragover = function(e) {
+          e.preventDefault();
+        };
+        $('#dropzone').ondrop = function(e) {
+          e.target.style.backgroundColor = '#eee';
+          if (synth && synth.isPlaying) synth.stop();
+          AjaxLoader.showBig(e.target.parentNode);
+          synth = new Synthesizer(e.dataTransfer.files[0], function(buffer) {
+            AjaxLoader.hideBig(e.target.parentNode);
+            av.load(buffer);
+            synth.addAnalyser(drawFFT, clearFFT);
+            an = new AudioNodes();
+            an.init();
+          }, function(err) {
+            AjaxLoader.hideBig(e.target.parentNode);
+            if (err) alert(err);
+          });
+        };
+
+        /* set up convolver */
+        $('#conv_drop').ondragenter = function(e) {
+          e.target.style.backgroundColor = '#aaa';
+        };
+        $('#conv_drop').ondragleave = function(e) {
+          e.target.style.backgroundColor = '#fff';
+        };
+        $('#conv_drop').ondragover = function(e) {
+          e.preventDefault();
+        };
+        $('#conv_drop').ondrop = function(e) {
+          e.target.style.backgroundColor = '#fff';
+          if (synth) {
+            $('#convolver').checked = true;
+            var file = e.dataTransfer.files[0];
+            $('#conv_filename').value = file.name;
+            synth.addNode('Convolver', {
+              buffer: file
+            });
+          }
+        };
+
+        document.onkeydown = function(e) {
+          if (e.keyCode === 32 && synth) {
+            if (synth.isPlaying) synth.stop();
+            synth.play();
+            e.preventDefault();
+          }
+        };
+      };
+    </script>
+    <style>
+      body {
+        font-family: 'Arial', sans-serif;
+      }
+      #wave {
+        margin-left:308px;
+      }
+      #dropzone svg {
+        background-color:#eee;
+      }
+      #params {
+        margin-top:22px;
+        width:300px;
+        float:left;
+      }
+      #visualizer {
+        margin-top:8px;
+        margin-left:308px;
+        border:1px solid gray;
+      }
+      #visualizer canvas {
+        width:100%;
+        height:150px;
+      }
+      footer {
+        padding:5px 0;
+        text-align:center;
+        clear:left;
+      }
+    </style>
+  </head>
+  <body>
+    <section id="params">
+      <fieldset name="gain">
+        <legend><label><input type="checkbox" id="gain" />Gain</label></legend>
+        Gain: <input type="range" id="gain_value" min="0.000" max="1.000" step="0.001" value="1.000" /><input type="output" value="1.000" readonly />
+      </fieldset>
+      <!--fieldset name="compressor">
+        <legend><label><input type="checkbox" id="compressor" disabled />Dynamics Compressor</label></legend>
+        Nothing has been implemented yet.
+      </fieldset-->
+      <fieldset name="convolver" id="conv_drop">
+        <legend><label><input type="checkbox" id="convolver" />Convolver</label></legend>
+        drop impulse response audio file here.
+        <input type="output" id="conv_filename" value="" />
+      </fieldset>
+      <fieldset name="delay">
+        <legend><label><input type="checkbox" id="delay" />Delay</label></legend>
+        DelayTime: <input type="range" id="delay_time" min="0.000" max="1.000" step="0.001" value="0" /><input type="output" value="0" readonly />
+      </fieldset>
+      <!--fieldset name="shaper">
+        <legend><label><input type="checkbox" id="shaper" />Wave Shaper</label></legend>
+        Curve: <input type="range" id="shaper_curve" min="-1.000" max="1.000" step="0.001" value="0.000" /><input type="output" value="0.000" readonly />
+      </fieldset-->
+      <fieldset name="biquadfilter">
+        <legend><label><input type="checkbox" id="biquad_filter" />Biquad Filter</label></legend>
+        Type: <select id="filter_type">
+          <option value="0">Low Pass</option>
+          <option value="1">High Pass</option>
+          <option value="2">Band Pass</option>
+          <option value="3">Low Shelf</option>
+          <option value="4">High Shelf</option>
+          <option value="5">Peaking</option>
+          <option value="6">Notch</option>
+          <option value="7">All Pass</option>
+        </select><input type="output" value="0" readonly /><br/>
+        Q: <input type="range" id="filter_q" min="-20" max="20" value="0" /><input type="output" value="0" readonly /><br/>
+        Frequency: <input type="range" id="filter_frequency" min="20" max="22050" value="20" /><input type="output" value="20" readonly /><br/>
+        Gain: <input type="range" id="filter_gain" min="0.000" max="1.000" step="0.001" value="1.000" /><input type="output" value="1.000" readonly />
+      </fieldset>
+      <!--fieldset name="panner">
+        <legend><label><input type="checkbox" id="panner" />Panner</label></legend>
+        Type: <select id="panner_model">
+          <option value="0">Equal Power</option>
+          <option value="1">HRTF</option>
+          <option value="2">Sound Field</option>
+        </select><input type="output" value="0" readonly /><br/>
+        refDistance: <input type="range" id="panner_refdis" min="0" max="10020" step="0.001" value="0" /><input type="output" value="0" readonly /><br/>
+        maxDistance: <input type="range" id="panner_maxdis" min="0" max="10020" step="0.001" value="0" /><input type="output" value="0" readonly /><br/>
+        rolloffFactor: <input type="range" id="panner_rolloff" min="0" max="10020" step="0.001" value="0" /><input type="output" value="0" readonly />
+      </fieldset-->
+    </section>
+    <section id="wave">
+      <p>Drop sound file onto space below. Press 'space key' to play.</p>
+      <div id="dropzone"></div>
+    </section>
+    <section id="visualizer">
+      <canvas id="fft" width="1000"></canvas>
+    </section>
+    <footer>
+      <p>Developed by <a href="http://profiles.google.com/agektmr">Eiji Kitamura</a></p>
+    </footer>
+  </body>
+</html>
